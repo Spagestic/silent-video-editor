@@ -200,9 +200,12 @@ def detect_non_silent_intervals(audio_array, fps, silence_threshold_db=-40, min_
     return kept_intervals
 
 
-def process_video(video_path, output_path, silence_threshold_db=-40, min_silence_len_sec=1.0, merge_gap_sec=0.2, progress_callback=None):
+def process_video(video_path, output_path, silence_threshold_db=-40,
+                  min_silence_len_sec=1.0, merge_gap_sec=0.2,
+                  start_padding_sec=0.1, end_padding_sec=0.1, # <-- New Parameters
+                  progress_callback=None):
     """
-    Removes silent parts from a video based on detected intervals.
+    Removes silent parts from a video based on detected intervals, adding padding.
 
     Args:
         video_path (str): Path to the input video file.
@@ -210,11 +213,12 @@ def process_video(video_path, output_path, silence_threshold_db=-40, min_silence
         silence_threshold_db (float): Silence threshold in dB.
         min_silence_len_sec (float): Minimum duration of silence to remove.
         merge_gap_sec (float): Merge adjacent non-silent segments closer than this.
+        start_padding_sec (float): Seconds to keep *before* the start of a detected non-silent segment.
+        end_padding_sec (float): Seconds to keep *after* the end of a detected non-silent segment.
         progress_callback (callable, optional): Function to report progress (0.0 to 1.0).
 
     Returns:
-        tuple: (bool, str) indicating success status and a message.
-               Returns the path to the output file if successful.
+        tuple: (bool, str) indicating success status and a message/path.
     """
     video = None
     final_clip = None
@@ -223,6 +227,9 @@ def process_video(video_path, output_path, silence_threshold_db=-40, min_silence
         if progress_callback: progress_callback(0.0, "Loading video...")
         logging.info(f"Loading video: {video_path}")
         video = VideoFileClip(video_path)
+        # --- Get total duration early for boundary checks ---
+        video_duration = video.duration
+        # ----------------------------------------------------
         audio = video.audio
 
         if audio is None:
@@ -245,38 +252,56 @@ def process_video(video_path, output_path, silence_threshold_db=-40, min_silence
 
         if not non_silent_intervals:
             logging.warning("No non-silent segments detected. No changes will be made.")
-            # Decide if we should copy the original or return an error/message
-            # Let's return a specific message
             return False, "No non-silent segments found based on the criteria. Output not generated."
-            # Alternatively, copy original:
-            # import shutil
-            # shutil.copy(video_path, output_path)
-            # return True, "No silence removed, original video copied."
 
-        logging.info(f"Extracting {len(non_silent_intervals)} non-silent subclips...")
+        logging.info(f"Extracting {len(non_silent_intervals)} non-silent subclips with padding ({start_padding_sec}s start, {end_padding_sec}s end)...")
         subclips = []
         total_segments = len(non_silent_intervals)
+
+        # --- Iterate and apply padding ---
+        adjusted_intervals = []
+        last_kept_end_time = 0.0
         for i, (start_sec, end_sec) in enumerate(non_silent_intervals):
-            # Ensure start/end times are within video duration
-            start_sec = max(0, start_sec)
-            end_sec = min(video.duration, end_sec)
-            if end_sec > start_sec: # Avoid zero-duration clips
-                 segment_progress = 0.3 + (0.6 * (i / total_segments)) # Progress from 30% to 90%
-                 if progress_callback: progress_callback(segment_progress, f"Extracting segment {i+1}/{total_segments} ({start_sec:.2f}s - {end_sec:.2f}s)")
-                 logging.debug(f"Creating subclip: {start_sec:.3f}s to {end_sec:.3f}s")
-                 subclips.append(video.subclipped(start_sec, end_sec))
+            # Apply padding
+            padded_start = start_sec - start_padding_sec
+            padded_end = end_sec + end_padding_sec
+
+            # Ensure start doesn't go below zero or overlap significantly with the previous *kept* segment
+            padded_start = max(0.0, padded_start)
+            padded_start = max(last_kept_end_time, padded_start) # Prevent overlap after padding
+
+            # Ensure end doesn't exceed video duration
+            padded_end = min(video_duration, padded_end)
+
+            # Ensure interval is valid (start < end) after padding/clamping
+            if padded_end > padded_start:
+                 adjusted_intervals.append((padded_start, padded_end))
+                 last_kept_end_time = padded_end # Update the end time of the last segment we decided to keep
             else:
-                 logging.warning(f"Skipping zero or negative duration subclip: start={start_sec}, end={end_sec}")
+                 logging.warning(f"Skipping segment {i+1} after padding resulted in invalid interval: start={padded_start:.2f}, end={padded_end:.2f}")
+
+
+        # --- Create subclips from adjusted intervals ---
+        logging.info(f"Creating {len(adjusted_intervals)} subclips from adjusted intervals...")
+        for i, (adj_start, adj_end) in enumerate(adjusted_intervals):
+            segment_progress = 0.3 + (0.6 * (i / len(adjusted_intervals))) if adjusted_intervals else 0.3
+            if progress_callback: progress_callback(segment_progress, f"Extracting segment {i+1}/{len(adjusted_intervals)} ({adj_start:.2f}s - {adj_end:.2f}s)")
+            logging.debug(f"Creating subclip: {adj_start:.3f}s to {adj_end:.3f}s")
+            subclips.append(video.subclip(adj_start, adj_end))
 
 
         if not subclips:
-             logging.error("Failed to create any valid subclips.")
-             return False, "Error: Could not extract any valid video segments."
+             logging.error("Failed to create any valid subclips after padding.")
+             # Clean up the original video object before returning
+             if video: video.close()
+             if audio: audio.close()
+             return False, "Error: Could not extract any valid video segments after applying padding."
 
 
         if progress_callback: progress_callback(0.9, "Concatenating segments...")
         logging.info("Concatenating final video...")
-        final_clip = concatenate_videoclips(subclips, method="compose") # 'compose' is often more robust
+        # Check if method='compose' helps with potential issues from padding overlaps if any sneak through
+        final_clip = concatenate_videoclips(subclips, method="compose")
 
         # --- Prepare output directory ---
         output_dir = os.path.dirname(output_path)
@@ -300,9 +325,17 @@ def process_video(video_path, output_path, silence_threshold_db=-40, min_silence
             # preset='medium' # Can adjust for speed vs compression ('ultrafast', 'fast', 'medium', 'slow', 'slower')
         )
 
-        if progress_callback: progress_callback(1.0, "Processing complete!")
-        logging.info("Video processing finished successfully.")
-        return True, output_path
+        # Ensure final_clip is defined before returning success
+        if final_clip:
+             # ... (write_videofile call) ...
+             if progress_callback: progress_callback(1.0, "Processing complete!")
+             logging.info("Video processing finished successfully.")
+             return True, output_path
+        else:
+             # Should have been caught earlier, but as a safeguard
+             logging.error("Final clip object is unexpectedly None before writing.")
+             return False, "Error: Failed to create the final concatenated video."
+
 
     except Exception as e:
         logging.error(f"Video processing failed: {e}", exc_info=True) # Log traceback
@@ -311,21 +344,16 @@ def process_video(video_path, output_path, silence_threshold_db=-40, min_silence
     finally:
         # --- Resource Cleanup ---
         logging.debug("Cleaning up resources...")
+        # Use try-except for each close operation
         if audio:
-             try:
-                 audio.close()
-             except Exception as e_close:
-                 logging.warning(f"Error closing audio object: {e_close}")
+            try: audio.close()
+            except Exception as e_close: logging.warning(f"Error closing audio object: {e_close}")
         if video:
-            try:
-                video.close()
-            except Exception as e_close:
-                logging.warning(f"Error closing video object: {e_close}")
+            try: video.close()
+            except Exception as e_close: logging.warning(f"Error closing video object: {e_close}")
         if final_clip:
-            try:
-                final_clip.close()
-            except Exception as e_close:
-                logging.warning(f"Error closing final clip object: {e_close}")
+            try: final_clip.close()
+            except Exception as e_close: logging.warning(f"Error closing final clip object: {e_close}")
         # Clean up temporary audio file if it wasn't removed
         if os.path.exists('temp-audio.m4a'):
             try:

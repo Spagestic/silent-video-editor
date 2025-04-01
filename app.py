@@ -25,6 +25,12 @@ if not os.path.exists(TEMP_DIR):
 logging.info(f"Using temporary directory: {TEMP_DIR}")
 
 # --- Sidebar for Parameters ---
+
+st.sidebar.header("Input Video")
+uploaded_file = st.sidebar.file_uploader("Choose a video file...", type=["mp4", "mov", "avi", "mkv"])
+
+st.sidebar.markdown("---")
+
 st.sidebar.header("Detection Parameters")
 silence_threshold = st.sidebar.slider(
     "Silence Threshold (dBFS)",
@@ -53,9 +59,24 @@ merge_gap = st.sidebar.slider(
     help="Keep short silences (e.g., pauses in speech) shorter than this duration by merging the surrounding non-silent segments."
 )
 
-st.sidebar.markdown("---")
-st.sidebar.header("Input Video")
-uploaded_file = st.sidebar.file_uploader("Choose a video file...", type=["mp4", "mov", "avi", "mkv"])
+st.sidebar.subheader("Refinement Padding")
+start_padding = st.sidebar.slider(
+    "Start Padding (seconds)",
+    min_value=0.0,
+    max_value=0.5, # Keep max relatively small
+    value=0.10, # Default start padding
+    step=0.01,
+    help="Keep this much extra time *before* detected sound starts. Helps prevent cutting off initial faint sounds."
+)
+
+end_padding = st.sidebar.slider(
+    "End Padding (seconds)",
+    min_value=0.0,
+    max_value=0.5, # Keep max relatively small
+    value=0.10, # Default end padding
+    step=0.01,
+    help="Keep this much extra time *after* detected sound ends. Helps prevent cutting off trailing faint sounds or echoes."
+)
 
 # --- Main Area ---
 if uploaded_file is not None:
@@ -164,6 +185,8 @@ if uploaded_file is not None:
                     silence_threshold_db=silence_threshold,
                     min_silence_len_sec=min_silence_duration,
                     merge_gap_sec=merge_gap,
+                    start_padding_sec=start_padding,
+                    end_padding_sec=end_padding,
                     progress_callback=progress_callback
                 )
 
