@@ -3,3 +3,4 @@ moviepy
 numpy
 matplotlib
 tqdm
+yt-dlp

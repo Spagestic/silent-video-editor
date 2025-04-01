@@ -287,7 +287,7 @@ def process_video(video_path, output_path, silence_threshold_db=-40,
             segment_progress = 0.3 + (0.6 * (i / len(adjusted_intervals))) if adjusted_intervals else 0.3
             if progress_callback: progress_callback(segment_progress, f"Extracting segment {i+1}/{len(adjusted_intervals)} ({adj_start:.2f}s - {adj_end:.2f}s)")
             logging.debug(f"Creating subclip: {adj_start:.3f}s to {adj_end:.3f}s")
-            subclips.append(video.subclip(adj_start, adj_end))
+            subclips.append(video.subclipped(adj_start, adj_end))
 
 
         if not subclips:
