@@ -4,7 +4,7 @@ from moviepy import VideoFileClip, concatenate_videoclips
 import logging
 from tqdm import tqdm
 import os
-from audio_utils import calculate_rms_db # Import from our local module
+from utils.audio_utils import calculate_rms_db # Import from our local module
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
